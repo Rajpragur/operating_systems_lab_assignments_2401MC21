@@ -1,0 +1,28 @@
+Lab 6 verification log (captured on host for deterministic simulations)
+
+$ python3 tests/test_lab6.py
+PASS bankers: safe sequence + grant + denial
+PASS deadlockdetect: acyclic + 3-process cycle
+PASS xv6 sources: ordering and bounded-resource strategy present
+
+$ ./tests/.bin/bankers
+Banker's Algorithm (N=5, M=3)
+Safe sequence: P1 -> P3 -> P4 -> P0 -> P2
+Request denied — would lead to unsafe state
+Request granted for P1: [1 0 2]
+Safe sequence: P1 -> P3 -> P4 -> P0 -> P2
+
+$ ./tests/.bin/deadlockdetect
+Resource Allocation Graph / Wait-for Detection
+
+Scenario 1: acyclic
+Wait-for edges: P0->P1 P1->P2
+Result: No deadlock
+
+Scenario 2: three-process circular wait
+Wait-for edges: P0->P1 P1->P2 P2->P0
+Cycle: P0 -> P1 -> P2 -> P0
+Result: DEADLOCK detected
+
+Q3/Q4 xv6 evidence:
+Run `resourceorder` and `syncdeadlock` in qemu-nox and capture the four screenshots listed in screenshots/README.md. The local machine lacks the i386 xv6 cross-compiler/QEMU, so no Q3/Q4 execution output is fabricated here.

@@ -1,0 +1,16 @@
+--- /dev/null
++++ syncdeadlock.c
+@@ -0,0 +1,13 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#define PRINTF(...) printf(1,__VA_ARGS__)
++#define NPROC 5
++#define CYCLES 3
++struct sem{int in;int out;};
++static void sem_init(struct sem *s,int tokens){int p[2],i;pipe(p);s->in=p[0];s->out=p[1];for(i=0;i<tokens;i++)write(s->out,"x",1);}
++static void wait_token(struct sem *s,int p,char *name){char c;PRINTF("P%d requests %s\n",p,name);read(s->in,&c,1);PRINTF("P%d granted %s\n",p,name);}
++static void post_token(struct sem *s){write(s->out,"x",1);}
++static void delay(void){volatile int i;for(i=0;i<400000;i++);}
++static void child(int p,struct sem *res[3]){int c;for(c=0;c<CYCLES;c++){PRINTF("P%d cycle %d: request Printer then Scanner\n",p,c);wait_token(res[0],p,"Printer");wait_token(res[1],p,"Scanner");PRINTF("P%d starts work using Printer+Scanner\n",p);delay();post_token(res[1]);post_token(res[0]);PRINTF("P%d releases Printer and Scanner\n",p);PRINTF("P%d cycle %d: request Scanner then Disk\n",p,c);wait_token(res[1],p,"Scanner");wait_token(res[2],p,"Disk");PRINTF("P%d starts work using Scanner+Disk\n",p);delay();post_token(res[2]);post_token(res[1]);PRINTF("P%d releases Scanner and Disk\n",p);}PRINTF("P%d completed all cycles\n",p);exit();}
++int main(void){struct sem printer,scanner,disk,*res[3];int i,pid;sem_init(&printer,2);sem_init(&scanner,1);sem_init(&disk,2);res[0]=&printer;res[1]=&scanner;res[2]=&disk;PRINTF("SYNCDEADLOCK: ordered acquisition P->S->D; 5 processes, 3 cycles\n");for(i=0;i<NPROC;i++){pid=fork();if(pid==0)child(i,res);}for(i=0;i<NPROC;i++)wait();PRINTF("All processes completed; no deadlock and no pool exceeded\n");exit();return 0;}

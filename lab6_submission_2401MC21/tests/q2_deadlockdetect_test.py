@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+from pathlib import Path
+import subprocess,re
+root=Path(__file__).resolve().parents[1]
+out=Path('/tmp/q2_deadlockdetect_test')
+subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-DHOST_TEST',str(root/'deadlockdetect.c'),'-o',str(out)],check=True)
+text=subprocess.check_output([str(out)],text=True)
+assert 'Scenario 1: acyclic' in text and 'Result: No deadlock' in text
+assert 'Scenario 2: three-process circular wait' in text
+assert re.search(r'Cycle: P\d -> P\d -> P\d -> P\d',text)
+print('PASS Q2: wait-for graph and three-process cycle')

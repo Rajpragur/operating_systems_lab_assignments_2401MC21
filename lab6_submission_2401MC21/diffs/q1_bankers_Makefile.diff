@@ -1,0 +1,10 @@
+--- Makefile
++++ Makefile
+@@ -182,6 +182,7 @@
+ 	_wc\
+ 	_zombie\
+ 	_bankers\
++	_bankers\
+ 	_deadlockdetect\
+ 	_resourceorder\
+ 	_syncdeadlock\

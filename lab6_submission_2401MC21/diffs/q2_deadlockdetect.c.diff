@@ -1,0 +1,25 @@
+--- /dev/null
++++ deadlockdetect.c
+@@ -0,0 +1,22 @@
++#ifdef HOST_TEST
++#include <stdio.h>
++#include <stdlib.h>
++#define xv6_exit() exit(0)
++#define PRINTF(...) printf(__VA_ARGS__)
++#else
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#define xv6_exit() exit()
++#define PRINTF(...) printf(1,__VA_ARGS__)
++#endif
++#define P 5
++#define R 3
++static int allocation[P][R];
++static int request[P][R];
++static int graph[P][P];
++static int color[P],stack[P],top;
++static void build_graph(void){int i,j,k;for(i=0;i<P;i++)for(j=0;j<P;j++)graph[i][j]=0;for(i=0;i<P;i++)for(k=0;k<R;k++)if(request[i][k])for(j=0;j<P;j++)if(allocation[j][k])graph[i][j]=1;PRINTF("Wait-for edges: ");for(i=0;i<P;i++)for(j=0;j<P;j++)if(graph[i][j])PRINTF("P%d->P%d ",i,j);PRINTF("\n");}
++static int dfs(int u){int v,i;color[u]=1;stack[top++]=u;for(v=0;v<P;v++)if(graph[u][v]){if(color[v]==0&&dfs(v))return 1;if(color[v]==1){PRINTF("Cycle: ");for(i=0;i<top;i++)if(stack[i]==v)break;for(;i<top;i++)PRINTF("P%d -> ",stack[i]);PRINTF("P%d\n",v);return 1;}}top--;color[u]=2;return 0;}
++static void run(char *name,int a[P][R],int q[P][R]){int i,dead=0;PRINTF("\n%s\n",name);for(i=0;i<P;i++){int j;for(j=0;j<R;j++){allocation[i][j]=a[i][j];request[i][j]=q[i][j];}}build_graph();for(i=0;i<P;i++)color[i]=0;top=0;for(i=0;i<P;i++)if(!color[i]&&dfs(i))dead=1;PRINTF("Result: %s\n",dead?"DEADLOCK detected":"No deadlock");}
++int main(void){int a1[P][R]={{1,0,0},{0,1,0},{0,0,1},{0,0,0},{0,0,0}},q1[P][R]={{0,1,0},{0,0,1},{0,0,0},{0,0,0},{0,0,0}};int a2[P][R]={{1,0,0},{0,1,0},{0,0,1},{0,0,0},{0,0,0}},q2[P][R]={{0,1,0},{0,0,1},{1,0,0},{0,0,0},{0,0,0}};PRINTF("Resource Allocation Graph / Wait-for Detection\n");run("Scenario 1: acyclic",a1,q1);run("Scenario 2: three-process circular wait",a2,q2);xv6_exit();return 0;}

@@ -1,0 +1,17 @@
+--- /dev/null
++++ resourceorder.c
+@@ -0,0 +1,14 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#define PRINTF(...) printf(1,__VA_ARGS__)
++struct sem{int in;int out;};
++static void sem_init(struct sem *s){int p[2];pipe(p);s->in=p[0];s->out=p[1];write(s->out,"x",1);}
++static void sem_wait(struct sem *s){char c;read(s->in,&c,1);}
++static void sem_post(struct sem *s){write(s->out,"x",1);}
++static void delay(void){volatile int i;for(i=0;i<2500000;i++);}
++static void worker(char *name,struct sem *first,struct sem *second,int first_no){PRINTF("%s: requesting Lock%d\n",name,first_no);sem_wait(first);PRINTF("%s acquired first lock; delaying\n",name);delay();PRINTF("%s waiting for second lock\n",name);sem_wait(second);PRINTF("%s acquired both locks; work complete\n",name);sem_post(second);sem_post(first);exit();}
++static void bad_demo(void){struct sem l1,l2;int a,b;sem_init(&l1);sem_init(&l2);PRINTF("\nBAD ORDER: A=L1->L2, B=L2->L1\n");a=fork();if(a==0)worker("Process A",&l1,&l2,1);b=fork();if(b==0)worker("Process B",&l2,&l1,2);sleep(30);PRINTF("Parent timeout: circular wait confirmed; killing children\n");kill(a);kill(b);wait();wait();}
++static void ordered_worker(char *name,struct sem *l1,struct sem *l2){PRINTF("%s requesting Lock1\n",name);sem_wait(l1);PRINTF("%s acquired Lock1; requesting Lock2\n",name);delay();sem_wait(l2);PRINTF("%s acquired Lock1 then Lock2; work complete\n",name);sem_post(l2);sem_post(l1);exit();}
++static void fixed_demo(void){struct sem l1,l2;int a,b;sem_init(&l1);sem_init(&l2);PRINTF("\nFIXED ORDER: every process uses L1->L2\n");a=fork();if(a==0)ordered_worker("Process A",&l1,&l2);b=fork();if(b==0)ordered_worker("Process B",&l1,&l2);wait();wait();PRINTF("Fixed-order workload completed without deadlock\n");}
++int main(void){bad_demo();fixed_demo();exit();return 0;}

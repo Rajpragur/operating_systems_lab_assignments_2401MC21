@@ -1,0 +1,10 @@
+--- Makefile
++++ Makefile
+@@ -181,6 +181,7 @@
+ 	_usertests\
+ 	_wc\
+ 	_zombie\
++	_resourceorder\
+ 	_bankers\
+ 	_deadlockdetect\
+ 	_resourceorder\
