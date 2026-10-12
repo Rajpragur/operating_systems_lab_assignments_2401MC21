@@ -2,21 +2,37 @@
 
 **Student:** Raj Pratap Singh Gurjar | **Roll number:** 2401MC21
 
-This folder contains my four xv6 solutions. I kept the layout close to Lab 6: one user program and one patch for each question, plus the output, screenshots, and write-up. The program sources are in `tests/`; the patches add them to the xv6 root. The patches are for MIT `xv6-public` commit `eeb7b415dbcb12cc362d0783e41c3d1f44066b17`.
+This folder contains my four xv6 lab solutions. The programs are in `tests/`, and each question has its own patch in `diffs/`. I applied and ran the patches on MIT `xv6-public` commit `eeb7b415dbcb12cc362d0783e41c3d1f44066b17`.
 
-## Files
+## What I did for each question
 
-- `tests/threadtest.c` — Q1: shared-address-space threads and an unsynchronized counter.
-- `tests/synctest.c` — Q2: semaphore-protected counter and producer-consumer buffer.
-- `tests/deadlock.c` — Q3: matrix detection, Banker safety check, and pipe circular-wait example.
-- `tests/priotest.c` — Q4: priority scheduling and aging.
-- `diffs/q1_threads.diff` through `diffs/q4_priority.diff` — question-wise kernel and user-program changes. Apply them in order.
-- `output_log.txt` and `screenshots/` — the QEMU results from the runs described below.
-- `Lab7_write_up.pdf` — design notes, results, and build notes.
+### Q1 — Threads
+
+I added `clone()` and `join()` so a process can start threads that share its address space. Each thread has its own kernel stack and user stack. The parent joins its threads before the shared address space is released.
+
+In `tests/threadtest.c`, I start three threads and have each increment the same counter 100,000 times without a lock. The expected total is 300,000. In the captured run it was 203,864, because concurrent updates can overwrite each other. The exact number changes from run to run.
+
+### Q2 — Semaphores
+
+I added the `sem_init()`, `sem_wait()`, and `sem_signal()` system calls. xv6 keeps a fixed table of ten semaphores; a thread waiting on a zero count sleeps until another thread signals it.
+
+`tests/synctest.c` first protects the counter from Q1 with a semaphore. The three threads then reach 300,000 exactly. The same program also runs a producer and consumer with a five-slot circular buffer. Semaphores track empty slots, full slots, and access to the buffer; all 12 items are produced and consumed.
+
+### Q3 — Deadlock detection and Banker safety
+
+In `tests/deadlock.c`, I use allocation, request, and available-resource values to check whether processes can finish. One matrix leaves P0, P1, and P2 deadlocked. Another lets them finish in the order P2, P0, P1.
+
+The program also calculates the remaining need for a Banker safety check. Its starting state is safe, but the test request is denied because granting it would leave no safe completion order. Finally, two child processes hold different pipe ends and wait on each other. The program reports the circular wait, kills the blocked children, and returns to the xv6 shell.
+
+### Q4 — Priority scheduling and aging
+
+I added system calls to set and read process priority. Priority 1 is highest and 20 is lowest. The scheduler runs the highest-priority runnable process and rotates between processes with the same priority. If a process waits runnable for more than 30 ticks, aging improves its priority by one level.
+
+`tests/priotest.c` starts four jobs with priorities 1, 5, 10, and 20. A pipe releases them after their priorities are set. In the captured single-CPU run they finish in that order. Aging messages appear while they wait, and the job that started at priority 20 improves to 14 before it runs.
 
 ## Build and run
 
-The patches use the xv6-public version listed above. In a terminal, clone that repository and apply the diffs in order:
+The patches need the xv6-public commit listed above. Clone the repository and apply the diffs in order:
 
 ```sh
 git clone https://github.com/mit-pdos/xv6-public.git xv6-public
@@ -36,12 +52,12 @@ make TOOLPREFIX=i686-elf- QEMU=qemu-system-i386 \
   qemu-nox CPUS=2
 ```
 
-At the xv6 prompt, run `threadtest`, `synctest`, and `deadlock`. To see Q4's priority order clearly, exit QEMU with **Control-A**, then **X**, and restart the same `make` command with `CPUS=1`; run `priotest` at the prompt.
+At the xv6 prompt run `threadtest`, `synctest`, and `deadlock`. For Q4, exit QEMU with **Control-A**, then **X**, restart the same command with `CPUS=1`, and run `priotest`. I used one CPU for this test so the priority order is easier to see.
 
-The warning flags in the build command are for three warnings in untouched xv6 files that the newer cross compiler treats as errors. The kernel and all four test programs built with this command.
+The three `-Wno-error` options handle warnings from untouched xv6 files that the newer cross compiler treats as errors. With them, the kernel and all four programs built successfully.
 
-## Results and screenshots
+## Output and screenshots
 
-Q1's final count is lower than 300,000 because the increments are deliberately unsynchronized; the number changes between runs. Q2 reaches 300,000, and its producer and consumer move all 12 items through a buffer of size five. Q3 reports the circular wait, prints a safe sequence for the safe matrix, and denies the Banker request that makes the state unsafe. In the Q4 run, the jobs finish in priority order and the aging messages show waiting priorities improve.
+`output_log.txt` has the captured output for all four runs. The PNGs in `screenshots/` are terminal-style images made from the QEMU serial output. To capture the Terminal window yourself, run a test at the xv6 prompt, press **Command-Shift-4**, then **Space**, and click the Terminal window. Save the images as `Q1_threadtest.png`, `Q2_synctest.png`, `Q3_deadlock.png`, and `Q4_priotest.png` in `screenshots/`.
 
-The PNGs are terminal-style images made from the captured QEMU serial output; the same output is in `output_log.txt`. To take screenshots of the Terminal window yourself, run a test at the xv6 prompt, press **Command-Shift-4**, then **Space**, and click the Terminal window. Save them as `Q1_threadtest.png`, `Q2_synctest.png`, `Q3_deadlock.png`, and `Q4_priotest.png` in `screenshots/`.
+`Lab7_write_up.pdf` has the shorter report with the design notes and results.
