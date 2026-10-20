@@ -1,0 +1,195 @@
+diff --git a/Makefile b/Makefile
+index 00ec598..169b151 100644
+--- a/Makefile
++++ b/Makefile
+@@ -181,6 +181,7 @@ UPROGS=\
+ 	_stressfs\
+ 	_usertests\
+ 	_vatest\
++	_vmprinttest\
+ 	_wc\
+ 	_zombie\
+ 
+diff --git a/defs.h b/defs.h
+index 264acc6..1e3ba5d 100644
+--- a/defs.h
++++ b/defs.h
+@@ -188,6 +188,7 @@ int             copyout(pde_t*, uint, void*, uint);
+ void            clearpteu(pde_t *pgdir, char *uva);
+ uint*           walkpgdir(pde_t*, const void*, int);  // returns pte_t* (mmu.h)
+ int             countpagetables(pde_t*);
++int             vmprint(void);
+ 
+ // number of elements in fixed-size array
+ #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+diff --git a/syscall.c b/syscall.c
+index e0c1e60..74207b4 100644
+--- a/syscall.c
++++ b/syscall.c
+@@ -105,6 +105,7 @@ extern int sys_write(void);
+ extern int sys_uptime(void);
+ extern int sys_va2pa(void);
+ extern int sys_getmeminfo(void);
++extern int sys_vmprint(void);
+ 
+ static int (*syscalls[])(void) = {
+ [SYS_fork]    sys_fork,
+@@ -130,6 +131,7 @@ static int (*syscalls[])(void) = {
+ [SYS_close]   sys_close,
+ [SYS_va2pa]   sys_va2pa,
+ [SYS_getmeminfo] sys_getmeminfo,
++[SYS_vmprint] sys_vmprint,
+ };
+ 
+ void
+diff --git a/syscall.h b/syscall.h
+index a951a7e..768dd27 100644
+--- a/syscall.h
++++ b/syscall.h
+@@ -22,3 +22,4 @@
+ #define SYS_close  21
+ #define SYS_va2pa  22
+ #define SYS_getmeminfo 23
++#define SYS_vmprint 24
+diff --git a/sysproc.c b/sysproc.c
+index 343b761..eae2183 100644
+--- a/sysproc.c
++++ b/sysproc.c
+@@ -133,3 +133,11 @@ sys_getmeminfo(void)
+     return -1;
+   return 0;
+ }
++
++// Lab 8, Q3: the work is in vmprint() in vm.c; this is only the
++// system call entry point.
++int
++sys_vmprint(void)
++{
++  return vmprint();
++}
+diff --git a/user.h b/user.h
+index 833b769..25afb6c 100644
+--- a/user.h
++++ b/user.h
+@@ -27,6 +27,7 @@ int sleep(int);
+ int uptime(void);
+ int va2pa(int);
+ int getmeminfo(struct meminfo*);
++int vmprint(void);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/usys.S b/usys.S
+index 565867d..d8b82f4 100644
+--- a/usys.S
++++ b/usys.S
+@@ -31,3 +31,4 @@ SYSCALL(sleep)
+ SYSCALL(uptime)
+ SYSCALL(va2pa)
+ SYSCALL(getmeminfo)
++SYSCALL(vmprint)
+diff --git a/vm.c b/vm.c
+index f9b30f2..4054dc5 100644
+--- a/vm.c
++++ b/vm.c
+@@ -405,3 +405,54 @@ countpagetables(pde_t *pgdir)
+       n++;
+   return n;
+ }
++
++// Lab 8, Q3: dump the calling process's page tables to the console.
++// User mappings (below KERNBASE) are listed entry by entry with
++// indentation for the two levels; kernel page directory entries are
++// only counted. The closing summary lets the reader check the number
++// of user accessible (PTE_U) pages against sz / PGSIZE and spot the
++// stack guard page exec() installs (mapped, PTE_U clear).
++int
++vmprint(void)
++{
++  struct proc *p = myproc();
++  pde_t *pgdir = p->pgdir;
++  pte_t *pgtab;
++  int i, j;
++  int kernelpds = 0;
++  int userpages = 0;
++  int guarded = 0;
++
++  cprintf("vmprint: pid %d sz %d bytes (%d pages)\n",
++          p->pid, p->sz, p->sz / PGSIZE);
++  for(i = 0; i < NPDENTRIES; i++){
++    if((pgdir[i] & PTE_P) == 0)
++      continue;
++    if(i >= PDX(KERNBASE)){
++      kernelpds++;
++      continue;
++    }
++    cprintf("  PDE %d: page table pa 0x%x flags P=%d W=%d U=%d\n",
++            i, PTE_ADDR(pgdir[i]),
++            (pgdir[i] & PTE_P) != 0, (pgdir[i] & PTE_W) != 0,
++            (pgdir[i] & PTE_U) != 0);
++    pgtab = (pte_t*)P2V(PTE_ADDR(pgdir[i]));
++    for(j = 0; j < NPTENTRIES; j++){
++      if((pgtab[j] & PTE_P) == 0)
++        continue;
++      cprintf("    PTE %d: va 0x%x pa 0x%x flags P=%d W=%d U=%d\n",
++              j, PGADDR(i, j, 0), PTE_ADDR(pgtab[j]),
++              (pgtab[j] & PTE_P) != 0, (pgtab[j] & PTE_W) != 0,
++              (pgtab[j] & PTE_U) != 0);
++      if(pgtab[j] & PTE_U)
++        userpages++;
++      else
++        guarded++;
++    }
++  }
++  cprintf("vmprint: %d kernel page directory entries (>= KERNBASE) not shown\n",
++          kernelpds);
++  cprintf("vmprint: user accessible pages %d, mapped without U %d, sz/PGSIZE %d\n",
++          userpages, guarded, p->sz / PGSIZE);
++  return 0;
++}
+diff --git a/vmprinttest.c b/vmprinttest.c
+new file mode 100644
+index 0000000..77ec978
+--- /dev/null
++++ b/vmprinttest.c
+@@ -0,0 +1,40 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++
++// Q3 (Lab 8): dump the page table at start-up, after growing the heap
++// by 8 pages, and after shrinking it by one page. New PTEs should show
++// up in the second dump and the top heap PTE should be gone in the
++// third. The mapped page with U=0 just below the stack page is the
++// guard page exec() installs; user accessible pages should therefore
++// be sz/PGSIZE - 1 in every dump.
++
++int
++main(void)
++{
++  char *base;
++  int i;
++
++  printf(1, "vmprinttest: dump at start, sz %d bytes\n", (int)sbrk(0));
++  vmprint();
++
++  base = sbrk(8 * 4096);
++  if(base == (char*)-1){
++    printf(1, "vmprinttest: sbrk failed\n");
++    exit();
++  }
++  for(i = 0; i < 8; i++)
++    base[i * 4096] = (char)i;
++  printf(1, "vmprinttest: dump after sbrk(8 pages) and touch, sz %d bytes\n",
++         (int)sbrk(0));
++  vmprint();
++
++  if(sbrk(-4096) == (char*)-1){
++    printf(1, "vmprinttest: sbrk(-4096) failed\n");
++    exit();
++  }
++  printf(1, "vmprinttest: dump after sbrk(-1 page), sz %d bytes\n",
++         (int)sbrk(0));
++  vmprint();
++  exit();
++}

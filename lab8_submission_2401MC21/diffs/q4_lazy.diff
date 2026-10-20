@@ -1,0 +1,331 @@
+diff --git a/Makefile b/Makefile
+index 169b151..620029c 100644
+--- a/Makefile
++++ b/Makefile
+@@ -172,6 +172,7 @@ UPROGS=\
+ 	_grep\
+ 	_init\
+ 	_kill\
++	_lazytest\
+ 	_ln\
+ 	_ls\
+ 	_memtest\
+diff --git a/defs.h b/defs.h
+index 1e3ba5d..05c0722 100644
+--- a/defs.h
++++ b/defs.h
+@@ -189,6 +189,8 @@ void            clearpteu(pde_t *pgdir, char *uva);
+ uint*           walkpgdir(pde_t*, const void*, int);  // returns pte_t* (mmu.h)
+ int             countpagetables(pde_t*);
+ int             vmprint(void);
++int             lazyalloc(pde_t*, uint);
++int             lazyfault(void);
+ 
+ // number of elements in fixed-size array
+ #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+diff --git a/lazytest.c b/lazytest.c
+new file mode 100644
+index 0000000..22be95c
+--- /dev/null
++++ b/lazytest.c
+@@ -0,0 +1,148 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "fcntl.h"
++
++// Q4 (Lab 8): lazy allocation. A 32 MB sbrk should cost no frames,
++// touching a few pages should cost only those pages, fork must not
++// panic on the untouched range, system calls must work with buffers
++// in untouched pages, and a wild access must kill only the offender.
++
++#define REGION (32 * 1024 * 1024)
++
++static int
++free_pages(void)
++{
++  struct meminfo mi;
++
++  if(getmeminfo(&mi) < 0)
++    return -1;
++  return mi.free_pages;
++}
++
++int
++main(void)
++{
++  char *big;
++  int f0, f1, i, pid;
++  int fds[2];
++  char dst[16];
++  struct meminfo *mi2;
++  int fd, n;
++
++  printf(1, "lazytest: demand paging for the heap\n");
++  f0 = free_pages();
++  printf(1, "free pages at start: %d\n", f0);
++
++  big = sbrk(REGION);
++  if(big == (char*)-1){
++    printf(1, "lazytest: sbrk(32 MB) failed\n");
++    exit();
++  }
++  f1 = free_pages();
++  printf(1, "after sbrk(32 MB): free %d (delta %d, expect 0 or -1 for a page table)\n",
++         f1, f1 - f0);
++
++  // Touch one page per megabyte: 32 pages out of 8192.
++  for(i = 0; i < REGION; i += 1024 * 1024)
++    big[i] = (char)(i >> 20);
++  f1 = free_pages();
++  printf(1, "after touching 32 spaced pages: free %d (delta %d = 32 data pages + new page tables)\n",
++         f1, f1 - f0);
++
++  // Shrinking a range with only one committed page must skip the
++  // untouched pages without freeing memory that was never allocated.
++  {
++    char *shrink = sbrk(8 * 4096);
++    if(shrink == (char*)-1){
++      printf(1, "lazytest: sbrk for shrink test failed\n");
++      exit();
++    }
++    shrink[0] = 's';
++    if(sbrk(-8 * 4096) == (char*)-1){
++      printf(1, "lazytest: shrink over untouched pages failed\n");
++      exit();
++    }
++    printf(1, "lazytest: shrink with untouched pages ok\n");
++  }
++
++  if(sbrk(0x7fffffff) == (char*)-1)
++    printf(1, "lazytest: oversized sbrk rejected\n");
++  else
++    printf(1, "lazytest: BUG - oversized sbrk accepted\n");
++
++  // System call with its output struct in an untouched page (copyout).
++  mi2 = (struct meminfo*)sbrk(4096);
++  if(getmeminfo(mi2) < 0)
++    printf(1, "lazytest: getmeminfo into untouched page FAILED\n");
++  else
++    printf(1, "getmeminfo into untouched page ok: free %d user %d\n",
++           mi2->free_pages, mi2->user_pages);
++
++  // read() into an untouched buffer (copyout again, via the file path).
++  fd = open("README", O_RDONLY);
++  if(fd < 0){
++    printf(1, "lazytest: cannot open README\n");
++    exit();
++  }
++  {
++    char *rbuf = sbrk(4096);
++    n = read(fd, rbuf, 15);
++    rbuf[15] = 0;
++    printf(1, "read into untouched buffer: n=%d starts with \"%s\"\n", n, rbuf);
++  }
++  close(fd);
++
++  // write() from an untouched buffer through a pipe: the kernel reads
++  // the page before it exists, so the fault is taken in kernel mode.
++  if(pipe(fds) < 0){
++    printf(1, "lazytest: pipe failed\n");
++    exit();
++  }
++  {
++    char *wbuf = sbrk(4096);
++    int w = write(fds[1], wbuf, 16);
++    int r = read(fds[0], dst, 16);
++    printf(1, "pipe write from untouched buffer: wrote %d, read back %d\n", w, r);
++  }
++  close(fds[0]);
++  close(fds[1]);
++
++  // Fork over the mostly untouched region, then exit and reap.
++  // Reference point taken here, after this process's own extra buffer
++  // pages above have been allocated.
++  f1 = free_pages();
++  printf(1, "free before fork: %d\n", f1);
++  pid = fork();
++  if(pid < 0){
++    printf(1, "lazytest: fork failed\n");
++    exit();
++  }
++  if(pid == 0){
++    if(big[100 * 4096] != 0){
++      printf(1, "child: lazy page was not zero-filled\n");
++      exit();
++    }
++    big[100 * 4096] = 5;   // one fresh page, only in the child
++    printf(1, "child: zero-filled page faulted in, free now %d\n", free_pages());
++    exit();
++  }
++  wait();
++  printf(1, "after child exit: free %d (expect %d, the pre-fork level)\n",
++         free_pages(), f1);
++  if(big[100 * 4096] == 0)
++    printf(1, "parent: lazy page remains zero after child exit\n");
++  else
++    printf(1, "parent: BUG - child modified parent's lazy page\n");
++
++  // A wild access kills only the process that makes it.
++  pid = fork();
++  if(pid == 0){
++    *(volatile char*)0x7fffffff = 1;
++    printf(1, "lazytest: BUG - wild access survived\n");
++    exit();
++  }
++  wait();
++  printf(1, "lazytest: parent alive after wild child access\n");
++  exit();
++}
+diff --git a/sysproc.c b/sysproc.c
+index eae2183..a07bcb9 100644
+--- a/sysproc.c
++++ b/sysproc.c
+@@ -52,7 +52,17 @@ sys_sbrk(void)
+   if(argint(0, &n) < 0)
+     return -1;
+   addr = myproc()->sz;
+-  if(growproc(n) < 0)
++  if(n > 0){
++    // Lab 8, Q4: lazy allocation. Growing only records the new size;
++    // frames are allocated on first touch by the page fault handler
++    // (lazyfault in vm.c, called from trap.c). Shrinking still frees
++    // pages through growproc/deallocuvm, which skip pages that were
++    // never touched.
++    if(myproc()->sz >= KERNBASE ||
++       (uint)n >= KERNBASE - myproc()->sz)
++      return -1;
++    myproc()->sz += n;
++  } else if(growproc(n) < 0)
+     return -1;
+   return addr;
+ }
+diff --git a/trap.c b/trap.c
+index 41c66eb..1ac2dd3 100644
+--- a/trap.c
++++ b/trap.c
+@@ -78,6 +78,21 @@ trap(struct trapframe *tf)
+     lapiceoi();
+     break;
+ 
++  case T_PGFLT:
++    // Lab 8, Q4: demand paging for the lazily grown heap. A successful
++    // lazyfault() installs the page and the process (or the kernel
++    // copy that faulted on its buffer) simply retries the access.
++    if(lazyfault() == 0)
++      break;
++    if(myproc() == 0 || (tf->cs&3) == 0){
++      cprintf("unexpected page fault from cpu %d eip %x (cr2=0x%x)\n",
++              cpuid(), tf->eip, rcr2());
++      panic("trap");
++    }
++    cprintf("pid %d %s: page fault at 0x%x outside the heap - kill proc\n",
++            myproc()->pid, myproc()->name, rcr2());
++    myproc()->killed = 1;
++    break;
+   //PAGEBREAK: 13
+   default:
+     if(myproc() == 0 || (tf->cs&3) == 0){
+diff --git a/vm.c b/vm.c
+index 4054dc5..6c1d06e 100644
+--- a/vm.c
++++ b/vm.c
+@@ -324,9 +324,10 @@ copyuvm(pde_t *pgdir, uint sz)
+     return 0;
+   for(i = 0; i < sz; i += PGSIZE){
+     if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
+-      panic("copyuvm: pte should exist");
++      continue;  // Lab 8, Q4: no page table here yet (untouched lazy heap)
+     if(!(*pte & PTE_P))
+-      panic("copyuvm: page not present");
++      continue;  // Lab 8, Q4: page not allocated yet; the child faults
++                 // it in on first touch, with the same zero contents
+     pa = PTE_ADDR(*pte);
+     flags = PTE_FLAGS(*pte);
+     if((mem = kalloc()) == 0)
+@@ -352,7 +353,7 @@ uva2ka(pde_t *pgdir, char *uva)
+   pte_t *pte;
+ 
+   pte = walkpgdir(pgdir, uva, 0);
+-  if((*pte & PTE_P) == 0)
++  if(pte == 0 || (*pte & PTE_P) == 0)
+     return 0;
+   if((*pte & PTE_U) == 0)
+     return 0;
+@@ -367,10 +368,21 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
+ {
+   char *buf, *pa0;
+   uint n, va0;
++  pte_t *pte;
+ 
+   buf = (char*)p;
+   while(len > 0){
+     va0 = (uint)PGROUNDDOWN(va);
++    // Lab 8, Q4: a kernel write into a heap page the process grew with
++    // sbrk but never touched must allocate the page, not fail. Only the
++    // current process's own lazily grown range qualifies.
++    pte = walkpgdir(pgdir, (char*)va0, 0);
++    if(pte == 0 || (*pte & PTE_P) == 0){
++      struct proc *cur = myproc();
++      if(cur == 0 || cur->pgdir != pgdir || va0 >= cur->sz ||
++         lazyalloc(pgdir, va0) < 0)
++        return -1;
++    }
+     pa0 = uva2ka(pgdir, (char*)va0);
+     if(pa0 == 0)
+       return -1;
+@@ -456,3 +468,54 @@ vmprint(void)
+           userpages, guarded, p->sz / PGSIZE);
+   return 0;
+ }
++
++// Lab 8, Q4: allocate one zeroed frame and map it at va (page aligned
++// here) with user read/write permission. Used when a lazily grown heap
++// page is touched for the first time. Returns 0 on success, -1 when no
++// frame is available or the mapping cannot be installed.
++int
++lazyalloc(pde_t *pgdir, uint va)
++{
++  char *mem;
++  pte_t *pte;
++
++  va = PGROUNDDOWN(va);
++  pte = walkpgdir(pgdir, (char*)va, 1);
++  if(pte == 0)
++    return -1;
++  if(*pte & PTE_P)
++    return 0;
++  mem = kalloc();
++  if(mem == 0)
++    return -1;
++  memset(mem, 0, PGSIZE);
++  if(mappages(pgdir, (char*)va, PGSIZE, V2P(mem), PTE_W|PTE_U) < 0){
++    kfree(mem);
++    return -1;
++  }
++  return 0;
++}
++
++// Lab 8, Q4: page fault service for lazy allocation. The fault is a
++// lazy heap access when the address is inside the recorded size but
++// the page was never mapped; this also covers faults taken in kernel
++// mode while copying to or from such a buffer. Anything else (address
++// at or beyond sz, or a present page faulting, e.g. the stack guard
++// page) is a genuine fault and returns -1.
++int
++lazyfault(void)
++{
++  struct proc *p = myproc();
++  uint va;
++  pte_t *pte;
++
++  if(p == 0)
++    return -1;
++  va = rcr2();
++  if(va >= p->sz)
++    return -1;
++  pte = walkpgdir(p->pgdir, (char*)va, 0);
++  if(pte != 0 && (*pte & PTE_P))
++    return -1;
++  return lazyalloc(p->pgdir, va);
++}

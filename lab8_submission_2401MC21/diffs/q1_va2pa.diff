@@ -1,0 +1,169 @@
+diff --git a/Makefile b/Makefile
+index 09d790c..c97bd4d 100644
+--- a/Makefile
++++ b/Makefile
+@@ -179,6 +179,7 @@ UPROGS=\
+ 	_sh\
+ 	_stressfs\
+ 	_usertests\
++	_vatest\
+ 	_wc\
+ 	_zombie\
+ 
+diff --git a/defs.h b/defs.h
+index 82fb982..a435a9f 100644
+--- a/defs.h
++++ b/defs.h
+@@ -185,6 +185,7 @@ void            switchuvm(struct proc*);
+ void            switchkvm(void);
+ int             copyout(pde_t*, uint, void*, uint);
+ void            clearpteu(pde_t *pgdir, char *uva);
++uint*           walkpgdir(pde_t*, const void*, int);  // returns pte_t* (mmu.h)
+ 
+ // number of elements in fixed-size array
+ #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+diff --git a/syscall.c b/syscall.c
+index ee85261..ecc11a7 100644
+--- a/syscall.c
++++ b/syscall.c
+@@ -103,6 +103,7 @@ extern int sys_unlink(void);
+ extern int sys_wait(void);
+ extern int sys_write(void);
+ extern int sys_uptime(void);
++extern int sys_va2pa(void);
+ 
+ static int (*syscalls[])(void) = {
+ [SYS_fork]    sys_fork,
+@@ -126,6 +127,7 @@ static int (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_va2pa]   sys_va2pa,
+ };
+ 
+ void
+diff --git a/syscall.h b/syscall.h
+index bc5f356..c3514e2 100644
+--- a/syscall.h
++++ b/syscall.h
+@@ -20,3 +20,4 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_va2pa  22
+diff --git a/sysproc.c b/sysproc.c
+index 0686d29..5079ef7 100644
+--- a/sysproc.c
++++ b/sysproc.c
+@@ -89,3 +89,26 @@ sys_uptime(void)
+   release(&tickslock);
+   return xticks;
+ }
++
++// Q1 (Lab 8): translate a virtual address of the calling process to its
++// physical address by walking the process page table. Returns -1 when the
++// page is not present or is not user accessible. The kernel prints the
++// two-level split of the address and the PTE flag bits for each successful
++// translation.
++int
++sys_va2pa(void)
++{
++  int va;
++  pte_t *pte;
++  struct proc *p = myproc();
++
++  if(argint(0, &va) < 0)
++    return -1;
++  pte = walkpgdir(p->pgdir, (void*)va, 0);
++  if(pte == 0 || (*pte & PTE_P) == 0 || (*pte & PTE_U) == 0)
++    return -1;
++  cprintf("va2pa: va 0x%x pdx %d ptx %d offset 0x%x flags P=%d W=%d U=%d\n",
++          va, PDX(va), PTX(va), va & 0xfff,
++          (*pte & PTE_P) != 0, (*pte & PTE_W) != 0, (*pte & PTE_U) != 0);
++  return (int)(PTE_ADDR(*pte) | ((uint)va & 0xfff));
++}
+diff --git a/user.h b/user.h
+index 4f99c52..0adead5 100644
+--- a/user.h
++++ b/user.h
+@@ -23,6 +23,7 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int va2pa(int);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/usys.S b/usys.S
+index 8bfd8a1..354639e 100644
+--- a/usys.S
++++ b/usys.S
+@@ -29,3 +29,4 @@ SYSCALL(getpid)
+ SYSCALL(sbrk)
+ SYSCALL(sleep)
+ SYSCALL(uptime)
++SYSCALL(va2pa)
+diff --git a/vatest.c b/vatest.c
+new file mode 100644
+index 0000000..049bd8b
+--- /dev/null
++++ b/vatest.c
+@@ -0,0 +1,45 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++
++// Q1 (Lab 8): exercise the va2pa system call on a global, a stack local
++// and a heap block, on an unmapped address, and across fork().
++
++int global_var = 42;
++
++int
++main(void)
++{
++  int local_var = 7;
++  char *heap;
++  int pid;
++
++  heap = malloc(128);
++  if(heap == 0){
++    printf(1, "vatest: malloc failed\n");
++    exit();
++  }
++  heap[0] = 'x';
++
++  printf(1, "vatest: virtual -> physical translation\n");
++  printf(1, "global: va 0x%x -> pa 0x%x\n", &global_var, va2pa((int)&global_var));
++  printf(1, "local:  va 0x%x -> pa 0x%x\n", &local_var, va2pa((int)&local_var));
++  printf(1, "heap:   va 0x%x -> pa 0x%x\n", heap, va2pa((int)heap));
++  printf(1, "unmapped 0x7fffffff -> %d (expect -1)\n", va2pa(0x7fffffff));
++
++  pid = fork();
++  if(pid < 0){
++    printf(1, "vatest: fork failed\n");
++    exit();
++  }
++  if(pid == 0){
++    printf(1, "child:  global va 0x%x -> pa 0x%x\n",
++           &global_var, va2pa((int)&global_var));
++    exit();
++  }
++  wait();
++  printf(1, "parent: global va 0x%x -> pa 0x%x\n",
++         &global_var, va2pa((int)&global_var));
++  printf(1, "vatest: same va in parent and child, different pa (fork copies pages)\n");
++  exit();
++}
+diff --git a/vm.c b/vm.c
+index 7134cff..d1ca7ef 100644
+--- a/vm.c
++++ b/vm.c
+@@ -32,7 +32,7 @@ seginit(void)
+ // Return the address of the PTE in page table pgdir
+ // that corresponds to virtual address va.  If alloc!=0,
+ // create any required page table pages.
+-static pte_t *
++pte_t *
+ walkpgdir(pde_t *pgdir, const void *va, int alloc)
+ {
+   pde_t *pde;

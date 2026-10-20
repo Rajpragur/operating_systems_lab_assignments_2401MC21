@@ -1,0 +1,90 @@
+Lab 8: Memory Management in xv6 - captured QEMU serial output
+Base: xv6-public commit eeb7b415dbcb12cc362d0783e41c3d1f44066b17
+Build: i686-elf-gcc, qemu-system-i386, 512 MB RAM, CPUS=1
+Programs: vatest, memtest, vmprinttest, lazytest, forktest
+
+xv6...
+cpu0: starting 0
+sb: size 1000 nblocks 941 ninodes 200 nlog 30 logstart 2 inodestart 32 bmap start 58
+init: starting sh
+$ vatest
+vatest: virtual -> physical translation
+va2pa: va 0xac0 pdx 0 ptx 0 offset 0xac0 flags P=1 W=1 U=1
+global: va 0xAC0 -> pa 0xDEE8AC0
+va2pa: va 0x2fbc pdx 0 ptx 2 offset 0xfbc flags P=1 W=1 U=1
+local:  va 0x2FBC -> pa 0xDEE5FBC
+va2pa: va 0xaf80 pdx 0 ptx 10 offset 0xf80 flags P=1 W=1 U=1
+heap:   va 0xAF80 -> pa 0xDF76F80
+unmapped 0x7fffffff -> -1 (expect -1)
+va2pa: va 0xac0 pdx 0 ptx 0 offset 0xac0 flags P=1 W=1 U=1
+child:  global va 0xAC0 -> pa 0xDF2CAC0
+va2pa: va 0xac0 pdx 0 ptx 0 offset 0xac0 flags P=1 W=1 U=1
+parent: global va 0xAC0 -> pa 0xDEE8AC0
+vatest: same va in parent and child, different pa (fork copies pages)
+$ memtest
+memtest: physical memory statistics (pages of 4 KB)
+start: total 57344 free 56789 user 3 pagetable 66
+after sbrk(16 pages) and touch: total 57344 free 56773 user 19 pagetable 66
+child after fork: total 57344 free 56687 user 19 pagetable 66
+after child exit: total 57344 free 56773 user 19 pagetable 66
+memtest: no leak - free pages back to 56773 after child exit
+$ vmprinttest
+vmprinttest: dump at start, sz 12288 bytes
+vmprint: pid 7 sz 12288 bytes (3 pages)
+  PDE 0: page table pa 0xdf0d000 flags P=1 W=1 U=1
+    PTE 0: va 0x0 pa 0xdf0c000 flags P=1 W=1 U=1
+    PTE 1: va 0x1000 pa 0xdf0e000 flags P=1 W=1 U=0
+    PTE 2: va 0x2000 pa 0xdf0f000 flags P=1 W=1 U=1
+vmprint: 64 kernel page directory entries (>= KERNBASE) not shown
+vmprint: user accessible pages 2, mapped without U 1, sz/PGSIZE 3
+vmprinttest: dump after sbrk(8 pages) and touch, sz 45056 bytes
+vmprint: pid 7 sz 45056 bytes (11 pages)
+  PDE 0: page table pa 0xdf0d000 flags P=1 W=1 U=1
+    PTE 0: va 0x0 pa 0xdf0c000 flags P=1 W=1 U=1
+    PTE 1: va 0x1000 pa 0xdf0e000 flags P=1 W=1 U=0
+    PTE 2: va 0x2000 pa 0xdf0f000 flags P=1 W=1 U=1
+    PTE 3: va 0x3000 pa 0xdf2d000 flags P=1 W=1 U=1
+    PTE 4: va 0x4000 pa 0xdee4000 flags P=1 W=1 U=1
+    PTE 5: va 0x5000 pa 0xdf2a000 flags P=1 W=1 U=1
+    PTE 6: va 0x6000 pa 0xdf75000 flags P=1 W=1 U=1
+    PTE 7: va 0x7000 pa 0xdffd000 flags P=1 W=1 U=1
+    PTE 8: va 0x8000 pa 0xdffc000 flags P=1 W=1 U=1
+    PTE 9: va 0x9000 pa 0xdffb000 flags P=1 W=1 U=1
+    PTE 10: va 0xa000 pa 0xdffa000 flags P=1 W=1 U=1
+vmprint: 64 kernel page directory entries (>= KERNBASE) not shown
+vmprint: user accessible pages 10, mapped without U 1, sz/PGSIZE 11
+vmprinttest: dump after sbrk(-1 page), sz 40960 bytes
+vmprint: pid 7 sz 40960 bytes (10 pages)
+  PDE 0: page table pa 0xdf0d000 flags P=1 W=1 U=1
+    PTE 0: va 0x0 pa 0xdf0c000 flags P=1 W=1 U=1
+    PTE 1: va 0x1000 pa 0xdf0e000 flags P=1 W=1 U=0
+    PTE 2: va 0x2000 pa 0xdf0f000 flags P=1 W=1 U=1
+    PTE 3: va 0x3000 pa 0xdf2d000 flags P=1 W=1 U=1
+    PTE 4: va 0x4000 pa 0xdee4000 flags P=1 W=1 U=1
+    PTE 5: va 0x5000 pa 0xdf2a000 flags P=1 W=1 U=1
+    PTE 6: va 0x6000 pa 0xdf75000 flags P=1 W=1 U=1
+    PTE 7: va 0x7000 pa 0xdffd000 flags P=1 W=1 U=1
+    PTE 8: va 0x8000 pa 0xdffc000 flags P=1 W=1 U=1
+    PTE 9: va 0x9000 pa 0xdffb000 flags P=1 W=1 U=1
+vmprint: 64 kernel page directory entries (>= KERNBASE) not shown
+vmprint: user accessible pages 9, mapped without U 1, sz/PGSIZE 10
+$ lazytest
+lazytest: demand paging for the heap
+free pages at start: 56788
+after sbrk(32 MB): free 56788 (delta 0, expect 0 or -1 for a page table)
+after touching 32 spaced pages: free 56749 (delta -39 = 32 data pages + new page tables)
+lazytest: shrink with untouched pages ok
+lazytest: oversized sbrk rejected
+getmeminfo into untouched page ok: free 56748 user 8197
+read into untouched buffer: n=15 starts with "NOTE: we have s"
+pipe write from untouched buffer: wrote 16, read back 16
+free before fork: 56745
+child: zero-filled page faulted in, free now 56630
+after child exit: free 56745 (expect 56745, the pre-fork level)
+parent: lazy page remains zero after child exit
+pid 10 lazytest: page fault at 0x7fffffff outside the heap - kill proc
+lazytest: parent alive after wild child access
+$ forktest
+fork test
+fork test OK
+$

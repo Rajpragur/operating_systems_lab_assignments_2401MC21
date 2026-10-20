@@ -1,0 +1,283 @@
+diff --git a/Makefile b/Makefile
+index c97bd4d..00ec598 100644
+--- a/Makefile
++++ b/Makefile
+@@ -174,6 +174,7 @@ UPROGS=\
+ 	_kill\
+ 	_ln\
+ 	_ls\
++	_memtest\
+ 	_mkdir\
+ 	_rm\
+ 	_sh\
+diff --git a/defs.h b/defs.h
+index a435a9f..264acc6 100644
+--- a/defs.h
++++ b/defs.h
+@@ -68,6 +68,7 @@ char*           kalloc(void);
+ void            kfree(char*);
+ void            kinit1(void*, void*);
+ void            kinit2(void*, void*);
++int             freepagecount(void);
+ 
+ // kbd.c
+ void            kbdintr(void);
+@@ -186,6 +187,7 @@ void            switchkvm(void);
+ int             copyout(pde_t*, uint, void*, uint);
+ void            clearpteu(pde_t *pgdir, char *uva);
+ uint*           walkpgdir(pde_t*, const void*, int);  // returns pte_t* (mmu.h)
++int             countpagetables(pde_t*);
+ 
+ // number of elements in fixed-size array
+ #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+diff --git a/kalloc.c b/kalloc.c
+index 14cd4f4..7bc7459 100644
+--- a/kalloc.c
++++ b/kalloc.c
+@@ -21,6 +21,7 @@ struct {
+   struct spinlock lock;
+   int use_lock;
+   struct run *freelist;
++  int freecount;  // Lab 8, Q2: pages currently on the free list
+ } kmem;
+ 
+ // Initialization happens in two phases.
+@@ -72,6 +73,7 @@ kfree(char *v)
+   r = (struct run*)v;
+   r->next = kmem.freelist;
+   kmem.freelist = r;
++  kmem.freecount++;
+   if(kmem.use_lock)
+     release(&kmem.lock);
+ }
+@@ -87,10 +89,28 @@ kalloc(void)
+   if(kmem.use_lock)
+     acquire(&kmem.lock);
+   r = kmem.freelist;
+-  if(r)
++  if(r){
+     kmem.freelist = r->next;
++    kmem.freecount--;
++  }
+   if(kmem.use_lock)
+     release(&kmem.lock);
+   return (char*)r;
+ }
+ 
++
++// Lab 8, Q2: read the free page count maintained by kalloc/kfree above.
++// The counter itself is updated while kmem.lock is held (or before locks
++// are enabled during kinit), so a plain read under the lock is exact.
++int
++freepagecount(void)
++{
++  int n;
++
++  if(kmem.use_lock)
++    acquire(&kmem.lock);
++  n = kmem.freecount;
++  if(kmem.use_lock)
++    release(&kmem.lock);
++  return n;
++}
+diff --git a/meminfo.h b/meminfo.h
+new file mode 100644
+index 0000000..c9b5425
+--- /dev/null
++++ b/meminfo.h
+@@ -0,0 +1,13 @@
++#ifndef MEMINFO_H
++#define MEMINFO_H
++
++// Lab 8, Q2: filled in by the getmeminfo system call. All counts are in
++// 4 KB pages. Shared by the kernel (sysproc.c) and user programs (user.h).
++struct meminfo {
++  int total_pages;      // physical pages managed by kalloc (PHYSTOP / PGSIZE)
++  int free_pages;       // pages currently on the kalloc free list
++  int user_pages;       // pages in the caller's address space (sz / PGSIZE)
++  int pagetable_pages;  // pages the caller's page tables use, directory included
++};
++
++#endif
+diff --git a/memtest.c b/memtest.c
+new file mode 100644
+index 0000000..5df5168
+--- /dev/null
++++ b/memtest.c
+@@ -0,0 +1,63 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++
++// Q2 (Lab 8): print physical memory statistics with getmeminfo, grow the
++// heap, fork, and check that free pages come back when the child exits.
++
++static void
++printstats(const char *tag, struct meminfo *save)
++{
++  struct meminfo mi;
++
++  if(getmeminfo(&mi) < 0){
++    printf(1, "memtest: getmeminfo failed\n");
++    return;
++  }
++  printf(1, "%s: total %d free %d user %d pagetable %d\n",
++         tag, mi.total_pages, mi.free_pages, mi.user_pages,
++         mi.pagetable_pages);
++  if(save)
++    *save = mi;
++}
++
++int
++main(void)
++{
++  char *base;
++  int i, pid;
++  struct meminfo mid, end;
++
++  printf(1, "memtest: physical memory statistics (pages of 4 KB)\n");
++  printstats("start", 0);
++
++  base = sbrk(16 * 4096);
++  if(base == (char*)-1){
++    printf(1, "memtest: sbrk failed\n");
++    exit();
++  }
++  // Touch every page so the frames are really handed out.
++  for(i = 0; i < 16; i++)
++    base[i * 4096] = (char)i;
++  printstats("after sbrk(16 pages) and touch", &mid);
++
++  pid = fork();
++  if(pid < 0){
++    printf(1, "memtest: fork failed\n");
++    exit();
++  }
++  if(pid == 0){
++    printstats("child after fork", 0);
++    exit();
++  }
++  wait();
++  printstats("after child exit", &end);
++
++  if(end.free_pages == mid.free_pages)
++    printf(1, "memtest: no leak - free pages back to %d after child exit\n",
++           end.free_pages);
++  else
++    printf(1, "memtest: LEAK? free %d after child exit, expected %d\n",
++           end.free_pages, mid.free_pages);
++  exit();
++}
+diff --git a/syscall.c b/syscall.c
+index ecc11a7..e0c1e60 100644
+--- a/syscall.c
++++ b/syscall.c
+@@ -104,6 +104,7 @@ extern int sys_wait(void);
+ extern int sys_write(void);
+ extern int sys_uptime(void);
+ extern int sys_va2pa(void);
++extern int sys_getmeminfo(void);
+ 
+ static int (*syscalls[])(void) = {
+ [SYS_fork]    sys_fork,
+@@ -128,6 +129,7 @@ static int (*syscalls[])(void) = {
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
+ [SYS_va2pa]   sys_va2pa,
++[SYS_getmeminfo] sys_getmeminfo,
+ };
+ 
+ void
+diff --git a/syscall.h b/syscall.h
+index c3514e2..a951a7e 100644
+--- a/syscall.h
++++ b/syscall.h
+@@ -21,3 +21,4 @@
+ #define SYS_mkdir  20
+ #define SYS_close  21
+ #define SYS_va2pa  22
++#define SYS_getmeminfo 23
+diff --git a/sysproc.c b/sysproc.c
+index 5079ef7..343b761 100644
+--- a/sysproc.c
++++ b/sysproc.c
+@@ -6,6 +6,7 @@
+ #include "memlayout.h"
+ #include "mmu.h"
+ #include "proc.h"
++#include "meminfo.h"
+ 
+ int
+ sys_fork(void)
+@@ -112,3 +113,23 @@ sys_va2pa(void)
+           (*pte & PTE_P) != 0, (*pte & PTE_W) != 0, (*pte & PTE_U) != 0);
+   return (int)(PTE_ADDR(*pte) | ((uint)va & 0xfff));
+ }
++
++// Lab 8, Q2: fill a struct meminfo for the calling process. Counts come
++// from the kalloc free counter and the caller's own page directory.
++int
++sys_getmeminfo(void)
++{
++  struct meminfo *umi;
++  struct meminfo kmi;
++  struct proc *p = myproc();
++
++  if(argptr(0, (char**)&umi, sizeof(*umi)) < 0)
++    return -1;
++  kmi.total_pages = PHYSTOP / PGSIZE;
++  kmi.free_pages = freepagecount();
++  kmi.user_pages = p->sz / PGSIZE;
++  kmi.pagetable_pages = countpagetables(p->pgdir);
++  if(copyout(p->pgdir, (uint)umi, &kmi, sizeof(kmi)) < 0)
++    return -1;
++  return 0;
++}
+diff --git a/user.h b/user.h
+index 0adead5..833b769 100644
+--- a/user.h
++++ b/user.h
+@@ -1,3 +1,5 @@
++#include "meminfo.h"
++
+ struct stat;
+ struct rtcdate;
+ 
+@@ -24,6 +26,7 @@ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
+ int va2pa(int);
++int getmeminfo(struct meminfo*);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/usys.S b/usys.S
+index 354639e..565867d 100644
+--- a/usys.S
++++ b/usys.S
+@@ -30,3 +30,4 @@ SYSCALL(sbrk)
+ SYSCALL(sleep)
+ SYSCALL(uptime)
+ SYSCALL(va2pa)
++SYSCALL(getmeminfo)
+diff --git a/vm.c b/vm.c
+index d1ca7ef..f9b30f2 100644
+--- a/vm.c
++++ b/vm.c
+@@ -392,3 +392,16 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
+ //PAGEBREAK!
+ // Blank page.
+ 
++
++// Lab 8, Q2: count the pages one address space spends on its own page
++// tables: the page directory itself plus every present page table page.
++int
++countpagetables(pde_t *pgdir)
++{
++  int i, n = 1;
++
++  for(i = 0; i < NPDENTRIES; i++)
++    if(pgdir[i] & PTE_P)
++      n++;
++  return n;
++}
