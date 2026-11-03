@@ -1,0 +1,195 @@
+diff --git a/Makefile b/Makefile
+index 09d790c..ee6b5fb 100644
+--- a/Makefile
++++ b/Makefile
+@@ -165,6 +165,7 @@ mkfs: mkfs.c fs.h
+ # http://www.gnu.org/software/make/manual/html_node/Chained-Rules.html
+ .PRECIOUS: %.o
+ 
++# Lab 10 Q1 test program is included in the xv6 filesystem.
+ UPROGS=\
+ 	_cat\
+ 	_echo\
+@@ -172,6 +173,7 @@ UPROGS=\
+ 	_grep\
+ 	_init\
+ 	_kill\
++	_memtest\
+ 	_ln\
+ 	_ls\
+ 	_mkdir\
+diff --git a/defs.h b/defs.h
+index 82fb982..044c9e7 100644
+--- a/defs.h
++++ b/defs.h
+@@ -68,6 +68,7 @@ char*           kalloc(void);
+ void            kfree(char*);
+ void            kinit1(void*, void*);
+ void            kinit2(void*, void*);
++void            getpagestats(int*, int*, int*);
+ 
+ // kbd.c
+ void            kbdintr(void);
+diff --git a/kalloc.c b/kalloc.c
+index 14cd4f4..0cf447a 100644
+--- a/kalloc.c
++++ b/kalloc.c
+@@ -21,6 +21,9 @@ struct {
+   struct spinlock lock;
+   int use_lock;
+   struct run *freelist;
++  int freecount;     // Lab 10 Q1: pages currently available on the free list
++  int allocated;     // Lab 10 Q1: successful runtime page allocations
++  int freed;         // Lab 10 Q1: runtime page frees
+ } kmem;
+ 
+ // Initialization happens in two phases.
+@@ -72,6 +75,9 @@ kfree(char *v)
+   r = (struct run*)v;
+   r->next = kmem.freelist;
+   kmem.freelist = r;
++  kmem.freecount++;
++  if(kmem.use_lock)
++    kmem.freed++;
+   if(kmem.use_lock)
+     release(&kmem.lock);
+ }
+@@ -87,10 +93,30 @@ kalloc(void)
+   if(kmem.use_lock)
+     acquire(&kmem.lock);
+   r = kmem.freelist;
+-  if(r)
++  if(r){
+     kmem.freelist = r->next;
++    kmem.freecount--;
++    if(kmem.use_lock)
++      kmem.allocated++;
++  }
+   if(kmem.use_lock)
+     release(&kmem.lock);
+   return (char*)r;
+ }
+ 
++
++
++// Lab 10 Q1: take a consistent snapshot of runtime allocation totals and
++// the free-list count. Boot-time kfree calls seed the list but are excluded
++// from the runtime allocated/freed totals.
++void
++getpagestats(int *allocated, int *freed, int *available)
++{
++  if(kmem.use_lock)
++    acquire(&kmem.lock);
++  *allocated = kmem.allocated;
++  *freed = kmem.freed;
++  *available = kmem.freecount;
++  if(kmem.use_lock)
++    release(&kmem.lock);
++}
+diff --git a/memtest.c b/memtest.c
+new file mode 100644
+index 0000000..3cb09a0
+--- /dev/null
++++ b/memtest.c
+@@ -0,0 +1,30 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++
++// Lab 10 Q1: force heap pages to be allocated, then release them.
++int
++main(void)
++{
++  char *p;
++  int i;
++
++  printf(1, "memtest: allocator statistics in pages\n");
++  memstats();
++  p = sbrk(8 * 4096);
++  if(p == (char*)-1){
++    printf(1, "memtest: sbrk failed\n");
++    exit();
++  }
++  for(i = 0; i < 8; i++)
++    p[i * 4096] = i;
++  printf(1, "after allocating and touching 8 pages\n");
++  memstats();
++  if(sbrk(-8 * 4096) == (char*)-1){
++    printf(1, "memtest: release failed\n");
++    exit();
++  }
++  printf(1, "after releasing 8 pages\n");
++  memstats();
++  exit();
++}
+diff --git a/syscall.c b/syscall.c
+index ee85261..c9e189d 100644
+--- a/syscall.c
++++ b/syscall.c
+@@ -103,6 +103,7 @@ extern int sys_unlink(void);
+ extern int sys_wait(void);
+ extern int sys_write(void);
+ extern int sys_uptime(void);
++extern int sys_memstats(void);  // Lab 10 Q1
+ 
+ static int (*syscalls[])(void) = {
+ [SYS_fork]    sys_fork,
+@@ -126,6 +127,7 @@ static int (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_memstats] sys_memstats,  // Lab 10 Q1
+ };
+ 
+ void
+diff --git a/syscall.h b/syscall.h
+index bc5f356..dd45c57 100644
+--- a/syscall.h
++++ b/syscall.h
+@@ -20,3 +20,4 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_memstats 22  // Lab 10 Q1
+diff --git a/sysproc.c b/sysproc.c
+index 0686d29..73b2cdc 100644
+--- a/sysproc.c
++++ b/sysproc.c
+@@ -89,3 +89,16 @@ sys_uptime(void)
+   release(&tickslock);
+   return xticks;
+ }
++
++
++// Lab 10 Q1: print allocator totals in 4 KB pages.
++int
++sys_memstats(void)
++{
++  int allocated, freed, available;
++
++  getpagestats(&allocated, &freed, &available);
++  cprintf("memstats: allocated %d freed %d current %d available %d pages\n",
++          allocated, freed, allocated - freed, available);
++  return 0;
++}
+diff --git a/user.h b/user.h
+index 4f99c52..2c6d1f0 100644
+--- a/user.h
++++ b/user.h
+@@ -23,6 +23,7 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int memstats(void);  // Lab 10 Q1
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/usys.S b/usys.S
+index 8bfd8a1..b1aa20e 100644
+--- a/usys.S
++++ b/usys.S
+@@ -29,3 +29,4 @@ SYSCALL(getpid)
+ SYSCALL(sbrk)
+ SYSCALL(sleep)
+ SYSCALL(uptime)
++SYSCALL(memstats)  // Lab 10 Q1

@@ -1,0 +1,179 @@
+diff --git a/Makefile b/Makefile
+index dcb07c1..f33394b 100644
+--- a/Makefile
++++ b/Makefile
+@@ -165,7 +165,7 @@ mkfs: mkfs.c fs.h
+ # http://www.gnu.org/software/make/manual/html_node/Chained-Rules.html
+ .PRECIOUS: %.o
+ 
+-# Lab 10 Q1-Q2 test programs are included in the xv6 filesystem.
++# Lab 10 Q1-Q3 test programs are included in the xv6 filesystem.
+ UPROGS=\
+ 	_cat\
+ 	_echo\
+@@ -175,6 +175,7 @@ UPROGS=\
+ 	_kill\
+ 	_memtest\
+ 	_vttest\
++	_pagetest\
+ 	_ln\
+ 	_ls\
+ 	_mkdir\
+diff --git a/pagetest.c b/pagetest.c
+new file mode 100644
+index 0000000..691a329
+--- /dev/null
++++ b/pagetest.c
+@@ -0,0 +1,51 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++
++// Lab 10 Q3: verify permissions, then try the protected write in a child.
++int
++main(void)
++{
++  char *p;
++  int fds[2], pid, n;
++  char marker;
++
++  p = sbrk(4096);
++  if(p == (char*)-1){
++    printf(1, "pagetest: sbrk failed\n");
++    exit();
++  }
++  p[0] = 'a';
++  printf(1, "pagetest: writable mapping before protection\n");
++  if(pageinfo((int)p) < 0 || setreadonly((int)p) < 0){
++    printf(1, "pagetest: page protection setup failed\n");
++    exit();
++  }
++  printf(1, "pagetest: mapping after setreadonly\n");
++  pageinfo((int)p);
++  if(pipe(fds) < 0){
++    printf(1, "pagetest: pipe failed\n");
++    exit();
++  }
++  pid = fork();
++  if(pid < 0){
++    printf(1, "pagetest: fork failed\n");
++    exit();
++  }
++  if(pid == 0){
++    close(fds[0]);
++    printf(1, "pagetest: child now attempts a write to the read-only page\n");
++    p[0] = 'b';
++    write(fds[1], "x", 1);
++    exit();
++  }
++  close(fds[1]);
++  wait();
++  n = read(fds[0], &marker, 1);
++  if(n == 0)
++    printf(1, "pagetest: child faulted on write as expected\n");
++  else
++    printf(1, "pagetest: write unexpectedly succeeded\n");
++  close(fds[0]);
++  exit();
++}
+diff --git a/syscall.c b/syscall.c
+index 92a68cf..e1e7174 100644
+--- a/syscall.c
++++ b/syscall.c
+@@ -105,6 +105,8 @@ extern int sys_write(void);
+ extern int sys_uptime(void);
+ extern int sys_memstats(void);  // Lab 10 Q1
+ extern int sys_vtop(void);      // Lab 10 Q2
++extern int sys_pageinfo(void);  // Lab 10 Q3
++extern int sys_setreadonly(void); // Lab 10 Q3
+ 
+ static int (*syscalls[])(void) = {
+ [SYS_fork]    sys_fork,
+@@ -130,6 +132,8 @@ static int (*syscalls[])(void) = {
+ [SYS_close]   sys_close,
+ [SYS_memstats] sys_memstats,  // Lab 10 Q1
+ [SYS_vtop] sys_vtop,  // Lab 10 Q2
++[SYS_pageinfo] sys_pageinfo,  // Lab 10 Q3
++[SYS_setreadonly] sys_setreadonly,  // Lab 10 Q3
+ };
+ 
+ void
+diff --git a/syscall.h b/syscall.h
+index af41cc2..81c7922 100644
+--- a/syscall.h
++++ b/syscall.h
+@@ -22,3 +22,5 @@
+ #define SYS_close  21
+ #define SYS_memstats 22  // Lab 10 Q1
+ #define SYS_vtop 23      // Lab 10 Q2
++#define SYS_pageinfo 24  // Lab 10 Q3
++#define SYS_setreadonly 25 // Lab 10 Q3
+diff --git a/sysproc.c b/sysproc.c
+index 2c58f3c..400fe25 100644
+--- a/sysproc.c
++++ b/sysproc.c
+@@ -120,3 +120,41 @@ sys_vtop(void)
+     return -1;
+   return (int)(PTE_ADDR(*pte) | ((uint)va & (PGSIZE - 1)));
+ }
++
++
++// Lab 10 Q3: report the frame and P/W/U flags of a mapped user address.
++int
++sys_pageinfo(void)
++{
++  int va;
++  pte_t *pte;
++  struct proc *p = myproc();
++
++  if(argint(0, &va) < 0 || (uint)va >= p->sz)
++    return -1;
++  pte = walkpgdir(p->pgdir, (void*)va, 0);
++  if(pte == 0 || (*pte & PTE_P) == 0 || (*pte & PTE_U) == 0)
++    return -1;
++  cprintf("pageinfo: va 0x%x frame 0x%x flags P=%d W=%d U=%d\n",
++          va, PTE_ADDR(*pte) / PGSIZE,
++          (*pte & PTE_P) != 0, (*pte & PTE_W) != 0, (*pte & PTE_U) != 0);
++  return 0;
++}
++
++// Lab 10 Q3: clear write permission in the current process and flush its TLB.
++int
++sys_setreadonly(void)
++{
++  int va;
++  pte_t *pte;
++  struct proc *p = myproc();
++
++  if(argint(0, &va) < 0 || (uint)va >= p->sz)
++    return -1;
++  pte = walkpgdir(p->pgdir, (void*)va, 0);
++  if(pte == 0 || (*pte & PTE_P) == 0 || (*pte & PTE_U) == 0)
++    return -1;
++  *pte &= ~PTE_W;
++  lcr3(V2P(p->pgdir));
++  return 0;
++}
+diff --git a/user.h b/user.h
+index 03635b9..5cc6db5 100644
+--- a/user.h
++++ b/user.h
+@@ -25,6 +25,8 @@ int sleep(int);
+ int uptime(void);
+ int memstats(void);  // Lab 10 Q1
+ int vtop(int);      // Lab 10 Q2
++int pageinfo(int);  // Lab 10 Q3
++int setreadonly(int); // Lab 10 Q3
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/usys.S b/usys.S
+index 7930e4b..9bedb0f 100644
+--- a/usys.S
++++ b/usys.S
+@@ -31,3 +31,5 @@ SYSCALL(sleep)
+ SYSCALL(uptime)
+ SYSCALL(memstats)  // Lab 10 Q1
+ SYSCALL(vtop)  // Lab 10 Q2
++SYSCALL(pageinfo)  // Lab 10 Q3
++SYSCALL(setreadonly)  // Lab 10 Q3

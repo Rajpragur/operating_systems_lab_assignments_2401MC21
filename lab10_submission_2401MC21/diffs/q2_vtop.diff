@@ -1,0 +1,154 @@
+diff --git a/Makefile b/Makefile
+index ee6b5fb..dcb07c1 100644
+--- a/Makefile
++++ b/Makefile
+@@ -165,7 +165,7 @@ mkfs: mkfs.c fs.h
+ # http://www.gnu.org/software/make/manual/html_node/Chained-Rules.html
+ .PRECIOUS: %.o
+ 
+-# Lab 10 Q1 test program is included in the xv6 filesystem.
++# Lab 10 Q1-Q2 test programs are included in the xv6 filesystem.
+ UPROGS=\
+ 	_cat\
+ 	_echo\
+@@ -174,6 +174,7 @@ UPROGS=\
+ 	_init\
+ 	_kill\
+ 	_memtest\
++	_vttest\
+ 	_ln\
+ 	_ls\
+ 	_mkdir\
+diff --git a/defs.h b/defs.h
+index 044c9e7..aa1e6bf 100644
+--- a/defs.h
++++ b/defs.h
+@@ -69,6 +69,7 @@ void            kfree(char*);
+ void            kinit1(void*, void*);
+ void            kinit2(void*, void*);
+ void            getpagestats(int*, int*, int*);
++uint*           walkpgdir(pde_t*, const void*, int);  // Lab 10 Q2
+ 
+ // kbd.c
+ void            kbdintr(void);
+diff --git a/syscall.c b/syscall.c
+index c9e189d..92a68cf 100644
+--- a/syscall.c
++++ b/syscall.c
+@@ -104,6 +104,7 @@ extern int sys_wait(void);
+ extern int sys_write(void);
+ extern int sys_uptime(void);
+ extern int sys_memstats(void);  // Lab 10 Q1
++extern int sys_vtop(void);      // Lab 10 Q2
+ 
+ static int (*syscalls[])(void) = {
+ [SYS_fork]    sys_fork,
+@@ -128,6 +129,7 @@ static int (*syscalls[])(void) = {
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
+ [SYS_memstats] sys_memstats,  // Lab 10 Q1
++[SYS_vtop] sys_vtop,  // Lab 10 Q2
+ };
+ 
+ void
+diff --git a/syscall.h b/syscall.h
+index dd45c57..af41cc2 100644
+--- a/syscall.h
++++ b/syscall.h
+@@ -21,3 +21,4 @@
+ #define SYS_mkdir  20
+ #define SYS_close  21
+ #define SYS_memstats 22  // Lab 10 Q1
++#define SYS_vtop 23      // Lab 10 Q2
+diff --git a/sysproc.c b/sysproc.c
+index 73b2cdc..2c58f3c 100644
+--- a/sysproc.c
++++ b/sysproc.c
+@@ -102,3 +102,21 @@ sys_memstats(void)
+           allocated, freed, allocated - freed, available);
+   return 0;
+ }
++
++
++// Lab 10 Q2: translate a present user virtual address through walkpgdir.
++// The result preserves the page offset; -1 marks invalid or unmapped input.
++int
++sys_vtop(void)
++{
++  int va;
++  pte_t *pte;
++  struct proc *p = myproc();
++
++  if(argint(0, &va) < 0 || (uint)va >= p->sz)
++    return -1;
++  pte = walkpgdir(p->pgdir, (void*)va, 0);
++  if(pte == 0 || (*pte & PTE_P) == 0 || (*pte & PTE_U) == 0)
++    return -1;
++  return (int)(PTE_ADDR(*pte) | ((uint)va & (PGSIZE - 1)));
++}
+diff --git a/user.h b/user.h
+index 2c6d1f0..03635b9 100644
+--- a/user.h
++++ b/user.h
+@@ -24,6 +24,7 @@ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
+ int memstats(void);  // Lab 10 Q1
++int vtop(int);      // Lab 10 Q2
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/usys.S b/usys.S
+index b1aa20e..7930e4b 100644
+--- a/usys.S
++++ b/usys.S
+@@ -30,3 +30,4 @@ SYSCALL(sbrk)
+ SYSCALL(sleep)
+ SYSCALL(uptime)
+ SYSCALL(memstats)  // Lab 10 Q1
++SYSCALL(vtop)  // Lab 10 Q2
+diff --git a/vm.c b/vm.c
+index 7134cff..e54f922 100644
+--- a/vm.c
++++ b/vm.c
+@@ -32,7 +32,8 @@ seginit(void)
+ // Return the address of the PTE in page table pgdir
+ // that corresponds to virtual address va.  If alloc!=0,
+ // create any required page table pages.
+-static pte_t *
++// Lab 10 Q2: exported so the vtop syscall can use this page-table walk.
++pte_t *
+ walkpgdir(pde_t *pgdir, const void *va, int alloc)
+ {
+   pde_t *pde;
+diff --git a/vttest.c b/vttest.c
+new file mode 100644
+index 0000000..1327a44
+--- /dev/null
++++ b/vttest.c
+@@ -0,0 +1,25 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++
++// Lab 10 Q2: compare mapped virtual addresses with their physical results.
++int
++main(void)
++{
++  char *p;
++  int pa;
++
++  p = sbrk(4096);
++  if(p == (char*)-1){
++    printf(1, "vttest: sbrk failed\n");
++    exit();
++  }
++  p[37] = 'x';
++  pa = vtop((int)(p + 37));
++  printf(1, "vttest: heap va 0x%x -> pa 0x%x (offset 37)\n", p + 37, pa);
++  pa = vtop(0);
++  printf(1, "vttest: code va 0x0 -> pa 0x%x\n", pa);
++  pa = vtop((int)(p + 4096));
++  printf(1, "vttest: unmapped va 0x%x -> %d (expect -1)\n", p + 4096, pa);
++  exit();
++}

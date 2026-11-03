@@ -1,0 +1,151 @@
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+// Lab 10 Q4: FIFO, LRU and Optimal page replacement on the assigned trace.
+#define NREF 20
+#define MAXFR 5
+
+static int refs[NREF] = {
+  7, 0, 1, 2, 0, 3, 0, 4, 2, 3,
+  0, 3, 2, 1, 2, 0, 1, 7, 0, 1
+};
+
+static void
+ratio(int numerator)
+{
+  int value;
+  value = numerator * 1000 / NREF;
+  printf(1, "%d.", value / 1000);
+  if(value % 1000 < 100)
+    printf(1, "0");
+  if(value % 1000 < 10)
+    printf(1, "0");
+  printf(1, "%d", value % 1000);
+}
+
+static int
+nextuse(int page, int from)
+{
+  int i;
+  for(i = from; i < NREF; i++)
+    if(refs[i] == page)
+      return i;
+  return NREF + 1;
+}
+
+// Run one policy. trace!=0 prints the frame state after each reference.
+static void
+simulate(int policy, int nframes, int trace, int *faultout, int *hitout)
+{
+  int frame[MAXFR], stamp[MAXFR];
+  int i, j, hit, empty, victim, faults, hits, fifo;
+  int future, farthest;
+
+  for(i = 0; i < nframes; i++){
+    frame[i] = -1;
+    stamp[i] = -1;
+  }
+  faults = 0;
+  hits = 0;
+  fifo = 0;
+
+  for(i = 0; i < NREF; i++){
+    hit = -1;
+    empty = -1;
+    for(j = 0; j < nframes; j++){
+      if(frame[j] == refs[i])
+        hit = j;
+      if(frame[j] == -1 && empty == -1)
+        empty = j;
+    }
+    if(hit >= 0){
+      hits++;
+      if(policy == 1)
+        stamp[hit] = i;
+    } else {
+      faults++;
+      if(empty >= 0)
+        victim = empty;
+      else if(policy == 0){
+        victim = fifo;
+        fifo = (fifo + 1) % nframes;
+      } else if(policy == 1){
+        victim = 0;
+        for(j = 1; j < nframes; j++)
+          if(stamp[j] < stamp[victim])
+            victim = j;
+      } else {
+        victim = 0;
+        farthest = -1;
+        for(j = 0; j < nframes; j++){
+          future = nextuse(frame[j], i + 1);
+          if(future > farthest){
+            farthest = future;
+            victim = j;
+          }
+        }
+      }
+      frame[victim] = refs[i];
+      if(policy == 1)
+        stamp[victim] = i;
+    }
+
+    if(trace){
+      printf(1, "%d |", refs[i]);
+      for(j = 0; j < nframes; j++){
+        if(frame[j] < 0)
+          printf(1, " -");
+        else
+          printf(1, " %d", frame[j]);
+      }
+      printf(1, " | %s\n", hit >= 0 ? "HIT" : "FAULT");
+    }
+  }
+  *faultout = faults;
+  *hitout = hits;
+}
+
+static void
+showtrace(char *name, int policy)
+{
+  int faults, hits;
+  printf(1, "\n%s, 3 frames\n", name);
+  printf(1, "ref | frames       | result\n");
+  simulate(policy, 3, 1, &faults, &hits);
+  printf(1, "%s totals: %d faults, %d hits\n", name, faults, hits);
+}
+
+static void
+showrow(char *name, int policy, int nframes)
+{
+  int faults, hits;
+  simulate(policy, nframes, 0, &faults, &hits);
+  printf(1, "%s %d %d %d ", name, nframes, faults, hits);
+  ratio(hits);
+  printf(1, "      ");
+  ratio(faults);
+  printf(1, "\n");
+}
+
+int
+main(void)
+{
+  int i;
+  printf(1, "pagereplace: reference string");
+  for(i = 0; i < NREF; i++)
+    printf(1, " %d", refs[i]);
+  showtrace("FIFO", 0);
+  showtrace("LRU", 1);
+  showtrace("Optimal", 2);
+
+  printf(1, "\ncomparison (20 references)\n");
+  printf(1, "Policy  Frames  Faults  Hits  Hit ratio  Fault ratio\n");
+  for(i = 3; i <= 5; i++){
+    showrow("FIFO", 0, i);
+    showrow("LRU", 1, i);
+    showrow("Optimal", 2, i);
+  }
+  printf(1, "ratios are hits/20 and faults/20\n");
+  exit();
+}
